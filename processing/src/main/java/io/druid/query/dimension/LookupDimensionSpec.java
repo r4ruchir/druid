@@ -22,6 +22,7 @@ package io.druid.query.dimension;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.google.common.base.Preconditions;
+import com.google.common.base.Strings;
 import com.metamx.common.StringUtils;
 import io.druid.query.extraction.DimExtractionFn;
 import io.druid.query.extraction.ExtractionFn;
@@ -44,15 +45,26 @@ public class LookupDimensionSpec implements DimensionSpec
   @JsonProperty
   private final LookupExtractor lookup;
 
+  @JsonProperty
+  private final boolean retainMissingValues;
+
+  @JsonProperty
+  private final String replaceMissingWith;
+
   private final ExtractionFn extractionFn;
 
   @JsonCreator
   public LookupDimensionSpec(
       @JsonProperty("dimension") String dimension,
       @JsonProperty("outputName") String outputName,
-      @JsonProperty("lookup") LookupExtractor lookupInput
+      @JsonProperty("lookup") LookupExtractor lookupInput,
+      @JsonProperty("retainMissingValues") final boolean retainMissingValues,
+      @JsonProperty("replaceMissingWith") final String replaceMissingWith
   )
   {
+    this.retainMissingValues = retainMissingValues;
+    this.replaceMissingWith = Strings.emptyToNull(replaceMissingWith);
+    Preconditions.checkArgument(!(retainMissingValues && !Strings.isNullOrEmpty(replaceMissingWith)), "Cannot specify a [replaceMissingValue] and set [retainMissingValue] to true");
     this.dimension = Preconditions.checkNotNull(dimension, "dimension can not be Null");
     this.outputName = Preconditions.checkNotNull(outputName, "outputName can not be Null");
     this.lookup = Preconditions.checkNotNull(lookupInput, "lookup can not be Null");
@@ -67,7 +79,13 @@ public class LookupDimensionSpec implements DimensionSpec
       @Override
       public String apply(String value)
       {
-        return lookup.apply(value);
+        final String retVal = Strings.emptyToNull(lookup.apply(value));
+        if (retainMissingValues)
+        {
+          return retVal == null ? Strings.emptyToNull(value) : retVal;
+        } else {
+        return retVal == null ? replaceMissingWith : retVal;
+        }
       }
 
       @Override
@@ -79,10 +97,7 @@ public class LookupDimensionSpec implements DimensionSpec
       @Override
       public ExtractionType getExtractionType()
       {
-        if (lookup.isOneToOne()) {
-          return ExtractionType.ONE_TO_ONE;
-        }
-        return ExtractionType.MANY_TO_ONE;
+        return lookup.isOneToOne() ? ExtractionType.ONE_TO_ONE : ExtractionType.MANY_TO_ONE;
       }
     };
   }
@@ -125,14 +140,20 @@ public class LookupDimensionSpec implements DimensionSpec
     byte[] dimensionBytes = StringUtils.toUtf8(dimension);
     byte[] dimExtractionFnBytes = extractionFn.getCacheKey();
     byte[] outputNameBytes = StringUtils.toUtf8(outputName);
+    byte[] replaceWithBytes = StringUtils.toUtf8(Strings.nullToEmpty(replaceMissingWith));
 
-    return ByteBuffer.allocate(3 + dimensionBytes.length + outputNameBytes.length + dimExtractionFnBytes.length)
+
+    return ByteBuffer.allocate(6 + dimensionBytes.length + outputNameBytes.length + dimExtractionFnBytes.length + replaceWithBytes.length)
                      .put(CACHE_TYPE_ID)
                      .put(dimensionBytes)
                      .put(DimFilterCacheHelper.STRING_SEPARATOR)
                      .put(outputNameBytes)
                      .put(DimFilterCacheHelper.STRING_SEPARATOR)
                      .put(dimExtractionFnBytes)
+                     .put(DimFilterCacheHelper.STRING_SEPARATOR)
+                     .put(replaceWithBytes)
+                     .put(DimFilterCacheHelper.STRING_SEPARATOR)
+                     .put(retainMissingValues == true ? (byte) 1 : (byte) 0)
                      .array();
   }
 
@@ -154,13 +175,21 @@ public class LookupDimensionSpec implements DimensionSpec
 
     LookupDimensionSpec that = (LookupDimensionSpec) o;
 
+    if (retainMissingValues != that.retainMissingValues) {
+      return false;
+    }
     if (!getDimension().equals(that.getDimension())) {
       return false;
     }
     if (!getOutputName().equals(that.getOutputName())) {
       return false;
     }
-    return getLookup().equals(that.getLookup());
+    if (!getLookup().equals(that.getLookup())) {
+      return false;
+    }
+    return replaceMissingWith != null
+           ? replaceMissingWith.equals(that.replaceMissingWith)
+           : that.replaceMissingWith == null;
 
   }
 
@@ -170,6 +199,8 @@ public class LookupDimensionSpec implements DimensionSpec
     int result = getDimension().hashCode();
     result = 31 * result + getOutputName().hashCode();
     result = 31 * result + getLookup().hashCode();
+    result = 31 * result + (retainMissingValues ? 1 : 0);
+    result = 31 * result + (replaceMissingWith != null ? replaceMissingWith.hashCode() : 0);
     return result;
   }
 }
